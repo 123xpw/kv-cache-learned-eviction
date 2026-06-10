@@ -17,8 +17,6 @@ This is a trace-driven simulator, not an end-to-end LLM serving system.
 - `kv_cache_sim.py`: trace generator, MLP training, cache-policy simulation, ablation, and plotting.
 - `figures/kv_cache_sim_results.png`: main 40% cache-budget comparison.
 - `figures/kv_cache_budget_results.png`: multi-budget comparison.
-- `paper/论文_KV_Cache管理策略.md`: paper draft corresponding to the simulation.
-
 ## Reproduce
 
 Install dependencies:
