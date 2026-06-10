@@ -225,6 +225,10 @@ def simulate(trace, capacity: int, policy: str, n_blocks: int = 100,
       - 保护 Recent Window：最近 H2O_RECENT_WINDOW 次访问块不驱逐
       - 从剩余候选中驱逐累积注意力分数最低的块
 
+    attn-only 策略：
+      - 不使用 Recent Window，直接驱逐累积注意力分数最低的块
+      - 用于控制 H2O-style 中 Recent Window 保护规则的影响
+
     默认返回 (overall_hit_rate, window_rates)。
     若 return_stats=True，返回包含命中率和简化系统代价估计的 dict。
     """
@@ -272,6 +276,9 @@ def simulate(trace, capacity: int, policy: str, n_blocks: int = 100,
             if not h2o_cands:
                 h2o_cands = candidates
             victim = min(h2o_cands, key=lambda b: cum_attn[b])
+
+        elif policy == 'attn':
+            victim = min(candidates, key=lambda b: cum_attn[b])
 
         elif policy == 'opt':
             victim = max(candidates,
@@ -374,7 +381,7 @@ def run_multi_seed_experiment(n_seeds=5, n_blocks=100, capacity=40,
     使用 n_seeds 组独立种子重复实验，报告各策略命中率均值 ± 标准差。
     每组种子独立控制块重要性分布、训练迹访问模式、测试迹访问模式。
     """
-    policies = ['opt', 'h2o', 'learned', 'lru']
+    policies = ['opt', 'attn', 'h2o', 'learned', 'lru']
     all_hrs = {p: [] for p in policies}
 
     for s in range(n_seeds):
@@ -408,7 +415,7 @@ def run_budget_experiment(test_trace, n_blocks, mlp, scaler, test_rd,
     if budgets is None:
         budgets = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
 
-    policies = ['opt', 'h2o', 'learned', 'lru']
+    policies = ['opt', 'attn', 'h2o', 'learned', 'lru']
     budget_results = {p: [] for p in policies}
 
     for bgt in budgets:
@@ -428,16 +435,23 @@ def run_budget_experiment(test_trace, n_blocks, mlp, scaler, test_rd,
 # ═══════════════════════════════════════════════════════════════
 
 ABLATION_CONFIGS = {
-    '全部6特征（原版）':           [0, 1, 2, 3, 4, 5],
-    '去除累积注意力+访问频率':      [0, 2, 4, 5],
-    '去除块位置+累积注意力+频率':   [4, 5],
-    '仅访问时效（≈ LRU）':         [4],
-    '仅累积注意力（≈ H2O）':       [1],
+    '全部6特征（原版）':            [0, 1, 2, 3, 4, 5],
+    '去除块位置':                  [1, 2, 3, 4, 5],
+    '去除累积注意力':               [0, 2, 3, 4, 5],
+    '去除对数频次':                [0, 1, 3, 4, 5],
+    '去除访问频率':                [0, 1, 2, 4, 5],
+    '去除访问时效':                [0, 1, 2, 3, 5],
+    '去除上下文占用率':             [0, 1, 2, 3, 4],
+    '仅块位置':                    [0],
+    '仅累积注意力':                 [1],
+    '仅对数频次':                  [2],
+    '仅访问频率':                  [3],
+    '仅访问时效（≈ LRU）':          [4],
 }
 
 
 def run_ablation_experiment(train_trace, test_trace, n_blocks, capacity):
-    """为 5 种特征配置分别训练 MLP 并评测命中率。"""
+    """为多种特征配置分别训练 MLP 并评测命中率。"""
     results = {}
     for name, mask in ABLATION_CONFIGS.items():
         mlp_a, scaler_a = train_mlp(train_trace, n_blocks,
@@ -453,17 +467,19 @@ def run_ablation_experiment(train_trace, test_trace, n_blocks, capacity):
 # ═══════════════════════════════════════════════════════════════
 
 def plot_main_results(results, save_path='kv_cache_sim_results.png'):
-    # 柱状图顺序：OPT → Learned(本文) → H2O → LRU，突出本文方案
-    bar_order   = ['opt', 'learned', 'h2o', 'lru']
-    bar_labels  = ['OPT\n(受限上界)', 'Learned\n(本文)', '$H_2O$-style\n(块级基线)', 'LRU\n(基准)']
-    bar_colors  = ['#37474F', '#1B5E20', '#E65100', '#B71C1C']
+    # 柱状图顺序：OPT → Learned(本文) → Attn-only → H2O → LRU
+    bar_order   = ['opt', 'learned', 'attn', 'h2o', 'lru']
+    bar_labels  = ['OPT\n(受限上界)', 'Learned\n(本文)', 'Attn-only\n(控制基线)',
+                   '$H_2O$-style\n(块级基线)', 'LRU\n(基准)']
+    bar_colors  = ['#37474F', '#1B5E20', '#1565C0', '#E65100', '#B71C1C']
 
     # 折线图配置
-    line_order  = ['opt', 'learned', 'h2o', 'lru']
-    line_labels = ['OPT (受限上界)', 'Learned (本文)', '$H_2O$-style (块级基线)', 'LRU (基准)']
-    line_colors = ['#37474F', '#1B5E20', '#E65100', '#B71C1C']
-    line_styles = ['--', '-', '-.', ':']
-    line_widths = [1.5, 2.2, 1.8, 1.5]
+    line_order  = ['opt', 'learned', 'attn', 'h2o', 'lru']
+    line_labels = ['OPT (受限上界)', 'Learned (本文)', 'Attn-only (控制基线)',
+                   '$H_2O$-style (块级基线)', 'LRU (基准)']
+    line_colors = ['#37474F', '#1B5E20', '#1565C0', '#E65100', '#B71C1C']
+    line_styles = ['--', '-', (0, (3, 1, 1, 1)), '-.', ':']
+    line_widths = [1.5, 2.2, 1.8, 1.8, 1.5]
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5),
                                     gridspec_kw={'width_ratios': [1, 1.3]})
@@ -505,15 +521,18 @@ def plot_main_results(results, save_path='kv_cache_sim_results.png'):
 
 def plot_budget_results(budget_results, budget_pcts,
                          save_path='kv_cache_budget_results.png'):
-    # 顺序：OPT → Learned(本文) → H2O → LRU
-    order   = ['opt', 'learned', 'h2o', 'lru']
+    # 顺序：OPT → Learned(本文) → Attn-only → H2O → LRU
+    order   = ['opt', 'learned', 'attn', 'h2o', 'lru']
     labels  = {'opt': 'OPT (受限上界)', 'learned': 'Learned (本文)',
+               'attn': 'Attn-only (控制基线)',
                'h2o': '$H_2O$-style (块级基线)', 'lru': 'LRU (基准)'}
     colors  = {'opt': '#37474F', 'learned': '#1B5E20',
+               'attn': '#1565C0',
                'h2o': '#E65100', 'lru': '#B71C1C'}
-    lstyle  = {'opt': '--', 'learned': '-', 'h2o': '-.', 'lru': ':'}
-    markers = {'opt': 's', 'learned': 'o', 'h2o': '^', 'lru': 'D'}
-    lwidths = {'opt': 1.5, 'learned': 2.2, 'h2o': 1.8, 'lru': 1.5}
+    lstyle  = {'opt': '--', 'learned': '-', 'attn': (0, (3, 1, 1, 1)),
+               'h2o': '-.', 'lru': ':'}
+    markers = {'opt': 's', 'learned': 'o', 'attn': 'v', 'h2o': '^', 'lru': 'D'}
+    lwidths = {'opt': 1.5, 'learned': 2.2, 'attn': 1.8, 'h2o': 1.8, 'lru': 1.5}
 
     fig, ax = plt.subplots(figsize=(7, 4.5))
     for p in order:
@@ -539,10 +558,11 @@ def plot_budget_results(budget_results, budget_pcts,
 
 def plot_cost_results(cost_summary, save_path='kv_cache_cost_results.png'):
     """绘制简化系统代价估计图。"""
-    order = ['opt', 'learned', 'h2o', 'lru']
+    order = ['opt', 'learned', 'attn', 'h2o', 'lru']
     labels = ['OPT\n(受限上界)', 'Learned\n(本文)',
+              'Attn-only\n(控制基线)',
               '$H_2O$-style\n(块级基线)', 'LRU\n(基准)']
-    colors = ['#37474F', '#1B5E20', '#E65100', '#B71C1C']
+    colors = ['#37474F', '#1B5E20', '#1565C0', '#E65100', '#B71C1C']
 
     total_ms = [cost_summary[p]['estimated_cost_ms'] for p in order]
     avg_us = [cost_summary[p]['avg_access_cost_us'] for p in order]
@@ -602,10 +622,11 @@ def main():
     mlp, scaler = train_mlp(train_trace, N_BLOCKS)
 
     # ── [3] 主实验：40% 缓存预算 ─────────────────────────────────
-    print("\n[3/6] 主实验：四种策略对比（缓存预算 40%）...")
+    print("\n[3/6] 主实验：五种策略对比（缓存预算 40%）...")
     configs = [
         ('opt',     dict(reuse_dists=test_rd)),
         ('learned', dict(mlp=mlp, scaler=scaler)),
+        ('attn',    dict()),
         ('h2o',     dict()),
         ('lru',     dict()),
     ]
@@ -621,10 +642,12 @@ def main():
 
     lru = results['lru']['hit_rate']     * 100
     h2o = results['h2o']['hit_rate']     * 100
+    att = results['attn']['hit_rate']    * 100
     lrn = results['learned']['hit_rate'] * 100
     opt = results['opt']['hit_rate']     * 100
     print(f"\n  Learned vs LRU : {lrn - lru:+.1f} pp")
     print(f"  Learned vs H2O : {lrn - h2o:+.1f} pp")
+    print(f"  Learned vs Attn: {lrn - att:+.1f} pp")
     print(f"  距受限 OPT 差距: {opt - lrn:.1f} pp")
 
     print("\n  生成主实验图表 ...")
@@ -643,7 +666,7 @@ def main():
 
     print(f"\n  {'策略':<8}  {'swap-in':>8}  {'swap-out':>8}  "
           f"{'估计代价(ms)':>12}  {'平均访问(us)':>12}  {'较LRU下降':>10}")
-    for p in ['opt', 'learned', 'h2o', 'lru']:
+    for p in ['opt', 'learned', 'attn', 'h2o', 'lru']:
         row = cost_summary[p]
         print(f"  {p:<8}  {row['swap_ins']:8d}  {row['swap_outs']:8d}  "
               f"{row['estimated_cost_ms']:12.1f}  "
@@ -656,13 +679,13 @@ def main():
         test_trace, N_BLOCKS, mlp, scaler, test_rd)
     plot_budget_results(budget_results, budget_pcts)
 
-    print(f"\n  {'预算':>4}  {'OPT':>6}  {'H2O':>6}  {'Learned':>8}  "
-          f"{'LRU':>6}  {'Δ(Lrn-LRU)':>11}  {'Δ(Lrn-H2O)':>10}")
+    print(f"\n  {'预算':>4}  {'OPT':>6}  {'Attn':>6}  {'H2O':>6}  {'Learned':>8}  "
+          f"{'LRU':>6}  {'Δ(Lrn-LRU)':>11}  {'Δ(Lrn-H2O)':>10}  {'Δ(Lrn-Attn)':>11}")
     for i, b in enumerate(budget_pcts):
-        o, h, l, r = (budget_results[p][i]
-                      for p in ['opt', 'h2o', 'learned', 'lru'])
-        print(f"  {b:3d}%  {o:6.1f}%  {h:6.1f}%  {l:8.1f}%  {r:6.1f}%  "
-              f"{l - r:+10.1f}  {l - h:+9.1f}")
+        o, a, h, l, r = (budget_results[p][i]
+                         for p in ['opt', 'attn', 'h2o', 'learned', 'lru'])
+        print(f"  {b:3d}%  {o:6.1f}%  {a:6.1f}%  {h:6.1f}%  {l:8.1f}%  {r:6.1f}%  "
+              f"{l - r:+10.1f}  {l - h:+9.1f}  {l - a:+10.1f}")
 
     # ── [6] 特征消融实验 ─────────────────────────────────────────
     print("\n[6/6] 特征消融实验 ...")
@@ -680,7 +703,7 @@ def main():
         n_seeds=5, n_blocks=N_BLOCKS, capacity=CAPACITY,
         train_steps=TRAIN_STEPS, test_steps=TEST_STEPS)
     print(f"\n  {'策略':<10}  {'均值':>6}  {'标准差':>6}")
-    for p in ['opt', 'h2o', 'learned', 'lru']:
+    for p in ['opt', 'attn', 'h2o', 'learned', 'lru']:
         print(f"  {p:<10}  {means[p]:5.1f}%  ±{stds[p]:.1f}%")
 
     print("\n" + "=" * 62)

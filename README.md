@@ -2,7 +2,7 @@
 
 This repository contains the simulation code for a course paper on learned KV Cache eviction for large language model inference.
 
-The project evaluates a lightweight MLP-based block eviction policy, referred to as `Learned`, on synthetic sparse block-level KV Cache access traces. It compares the policy with LRU, an H2O-style block-level heuristic, and a Belady OPT upper bound under the same protected-anchor-block constraint.
+The project evaluates a lightweight MLP-based block eviction policy, referred to as `Learned`, on synthetic sparse block-level KV Cache access traces. It compares the policy with LRU, an H2O-style block-level heuristic, an attention-only control baseline, and a Belady OPT upper bound under the same protected-anchor-block constraint.
 
 ## Scope
 
@@ -45,8 +45,11 @@ Expected main result under the default configuration:
 | --- | ---: |
 | OPT (constrained upper bound) | 92.7% |
 | Learned | 90.8% |
+| Attn-only control | 90.8% |
 | H2O-style | 90.2% |
 | LRU | 84.2% |
+
+The Attn-only control evicts the cached block with the lowest cumulative attention score without Recent Window protection. In the default stationary synthetic trace, it matches `Learned`, so the results should not be interpreted as evidence that the MLP policy is stronger than simple cumulative-attention sorting.
 
 The script also includes a simplified system-cost model. This is an estimate, not a hardware measurement. It uses a conservative synchronous-transfer model for swap-in and swap-out cost, and does not model asynchronous prefetch, overlap, or runtime scheduling. The default model assumes:
 
@@ -62,6 +65,7 @@ Under this model, the default run estimates:
 | Policy | Estimated total cost | Average access cost | Cost reduction vs. LRU |
 | --- | ---: | ---: | ---: |
 | OPT (constrained upper bound) | 939.4 ms | 19.28 us | 54.6% |
+| Attn-only control | 1196.7 ms | 24.56 us | 42.1% |
 | Learned | 1200.4 ms | 24.63 us | 41.9% |
 | H2O-style | 1270.4 ms | 26.07 us | 38.5% |
 | LRU | 2067.3 ms | 42.43 us | 0.0% |
