@@ -51,6 +51,43 @@ Expected main result under the default configuration:
 
 The Attn-only control evicts the cached block with the lowest cumulative attention score without Recent Window protection. In the default stationary synthetic trace, it matches `Learned`, so the results should not be interpreted as evidence that the MLP policy is stronger than simple cumulative-attention sorting.
 
+The OPT value above is a constrained Belady upper bound computed under the same protected-anchor-block rule used by all other policies. A true unconstrained Belady upper bound is not lower than this value.
+
+## Ablation Summary
+
+The simulator also runs 12 feature configurations: six leave-one-out settings and six single-feature settings. Under the default 40% cache budget, the main ablation results are:
+
+| Feature configuration | Hit rate | Delta vs. full features |
+| --- | ---: | ---: |
+| Full 6 features | 90.8% | baseline |
+| Without block position | 90.8% | ±0.0 pp |
+| Without cumulative attention | 90.8% | ±0.0 pp |
+| Without log access count | 90.7% | -0.1 pp |
+| Without access frequency | 90.6% | -0.2 pp |
+| Without recency | 90.7% | -0.1 pp |
+| Without context occupancy | 90.8% | ±0.0 pp |
+| Block position only | 43.4% | -47.4 pp |
+| Cumulative attention only | 90.8% | ±0.0 pp |
+| Log access count only | 90.7% | -0.1 pp |
+| Access frequency only | 90.7% | -0.1 pp |
+| Recency only | 84.1% | -6.7 pp |
+
+These results show that cumulative attention, log access count, and access frequency are redundant strong proxies for the fixed synthetic block-importance distribution. Block position alone performs poorly. Although the training and test traces share the same importance distribution, the Zipf importance values are randomly assigned to block IDs, so the mapping from scalar position to importance is highly irregular. A small single-input MLP tends to learn a smooth function over position and cannot reliably represent this jagged mapping.
+
+## Multi-Seed Summary
+
+Across 5 independent seeds at a 40% cache budget:
+
+| Policy | Mean hit rate | Std. dev. |
+| --- | ---: | ---: |
+| OPT (constrained upper bound) | 90.9% | ±2.1% |
+| Learned | 88.1% | ±3.0% |
+| Attn-only control | 88.0% | ±3.0% |
+| H2O-style | 87.3% | ±3.2% |
+| LRU | 80.7% | ±4.6% |
+
+This supports the same conservative interpretation as the default run: `Learned` is competitive with attention-based heuristics on the stationary synthetic traces, but it does not establish a clear advantage over simple cumulative-attention sorting.
+
 The script also includes a simplified system-cost model. This is an estimate, not a hardware measurement. It uses a conservative synchronous-transfer model for swap-in and swap-out cost, and does not model asynchronous prefetch, overlap, or runtime scheduling. The default model assumes:
 
 - 2 MB per KV block.
@@ -90,6 +127,8 @@ The simulator creates synthetic sparse block-level traces with:
 - context occupancy
 
 A small 6-32-1 MLP predicts reuse distance. The cache evicts blocks with larger predicted reuse distance.
+
+The current experiments cover stationary synthetic traces. Non-stationary scenarios such as dormant-then-reactivated blocks, distribution drift, and layer/head-specific attention behavior are not evaluated in this repository.
 
 ## Citation
 
