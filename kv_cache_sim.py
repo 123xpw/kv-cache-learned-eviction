@@ -218,8 +218,10 @@ def simulate(trace, capacity: int, policy: str, n_blocks: int = 100,
     """
     单策略 Trace-driven 仿真。
 
+    所有策略统一保护首部锚点块 block 0, 1，不参与驱逐。
+    因此 opt 是在相同保护约束下的 Belady 上界，不是无约束全局最优。
+
     H2O-style 策略（块级近似，不是 Zhang et al. 原论文的 token 级端到端复现）：
-      - 保护 Attention Sink：block 0, 1 不驱逐
       - 保护 Recent Window：最近 H2O_RECENT_WINDOW 次访问块不驱逐
       - 从剩余候选中驱逐累积注意力分数最低的块
 
@@ -453,12 +455,12 @@ def run_ablation_experiment(train_trace, test_trace, n_blocks, capacity):
 def plot_main_results(results, save_path='kv_cache_sim_results.png'):
     # 柱状图顺序：OPT → Learned(本文) → H2O → LRU，突出本文方案
     bar_order   = ['opt', 'learned', 'h2o', 'lru']
-    bar_labels  = ['OPT\n(理论上界)', 'Learned\n(本文)', '$H_2O$-style\n(块级基线)', 'LRU\n(基准)']
+    bar_labels  = ['OPT\n(受限上界)', 'Learned\n(本文)', '$H_2O$-style\n(块级基线)', 'LRU\n(基准)']
     bar_colors  = ['#37474F', '#1B5E20', '#E65100', '#B71C1C']
 
     # 折线图配置
     line_order  = ['opt', 'learned', 'h2o', 'lru']
-    line_labels = ['OPT (理论上界)', 'Learned (本文)', '$H_2O$-style (块级基线)', 'LRU (基准)']
+    line_labels = ['OPT (受限上界)', 'Learned (本文)', '$H_2O$-style (块级基线)', 'LRU (基准)']
     line_colors = ['#37474F', '#1B5E20', '#E65100', '#B71C1C']
     line_styles = ['--', '-', '-.', ':']
     line_widths = [1.5, 2.2, 1.8, 1.5]
@@ -505,7 +507,7 @@ def plot_budget_results(budget_results, budget_pcts,
                          save_path='kv_cache_budget_results.png'):
     # 顺序：OPT → Learned(本文) → H2O → LRU
     order   = ['opt', 'learned', 'h2o', 'lru']
-    labels  = {'opt': 'OPT (理论上界)', 'learned': 'Learned (本文)',
+    labels  = {'opt': 'OPT (受限上界)', 'learned': 'Learned (本文)',
                'h2o': '$H_2O$-style (块级基线)', 'lru': 'LRU (基准)'}
     colors  = {'opt': '#37474F', 'learned': '#1B5E20',
                'h2o': '#E65100', 'lru': '#B71C1C'}
@@ -538,7 +540,7 @@ def plot_budget_results(budget_results, budget_pcts,
 def plot_cost_results(cost_summary, save_path='kv_cache_cost_results.png'):
     """绘制简化系统代价估计图。"""
     order = ['opt', 'learned', 'h2o', 'lru']
-    labels = ['OPT\n(理论上界)', 'Learned\n(本文)',
+    labels = ['OPT\n(受限上界)', 'Learned\n(本文)',
               '$H_2O$-style\n(块级基线)', 'LRU\n(基准)']
     colors = ['#37474F', '#1B5E20', '#E65100', '#B71C1C']
 
@@ -623,7 +625,7 @@ def main():
     opt = results['opt']['hit_rate']     * 100
     print(f"\n  Learned vs LRU : {lrn - lru:+.1f} pp")
     print(f"  Learned vs H2O : {lrn - h2o:+.1f} pp")
-    print(f"  距 OPT 差距    : {opt - lrn:.1f} pp")
+    print(f"  距受限 OPT 差距: {opt - lrn:.1f} pp")
 
     print("\n  生成主实验图表 ...")
     plot_main_results(results)

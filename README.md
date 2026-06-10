@@ -2,7 +2,7 @@
 
 This repository contains the simulation code for a course paper on learned KV Cache eviction for large language model inference.
 
-The project evaluates a lightweight MLP-based block eviction policy, referred to as `Learned`, on synthetic sparse block-level KV Cache access traces. It compares the policy with LRU, an H2O-style block-level heuristic, and Belady OPT.
+The project evaluates a lightweight MLP-based block eviction policy, referred to as `Learned`, on synthetic sparse block-level KV Cache access traces. It compares the policy with LRU, an H2O-style block-level heuristic, and a Belady OPT upper bound under the same protected-anchor-block constraint.
 
 ## Scope
 
@@ -18,6 +18,7 @@ This is a trace-driven simulator, not an end-to-end LLM serving system.
 - `figures/kv_cache_sim_results.png`: main 40% cache-budget comparison.
 - `figures/kv_cache_budget_results.png`: multi-budget comparison.
 - `figures/kv_cache_cost_results.png`: simplified system-cost estimate.
+
 ## Reproduce
 
 Install dependencies:
@@ -42,12 +43,12 @@ Expected main result under the default configuration:
 
 | Policy | Hit rate |
 | --- | ---: |
-| OPT | 92.7% |
+| OPT (constrained upper bound) | 92.7% |
 | Learned | 90.8% |
 | H2O-style | 90.2% |
 | LRU | 84.2% |
 
-The script also includes a simplified system-cost model. This is an estimate, not a hardware measurement. The default model assumes:
+The script also includes a simplified system-cost model. This is an estimate, not a hardware measurement. It uses a conservative synchronous-transfer model for swap-in and swap-out cost, and does not model asynchronous prefetch, overlap, or runtime scheduling. The default model assumes:
 
 - 2 MB per KV block.
 - 16 GB/s effective transfer bandwidth.
@@ -60,7 +61,7 @@ Under this model, the default run estimates:
 
 | Policy | Estimated total cost | Average access cost | Cost reduction vs. LRU |
 | --- | ---: | ---: | ---: |
-| OPT | 939.4 ms | 19.28 us | 54.6% |
+| OPT (constrained upper bound) | 939.4 ms | 19.28 us | 54.6% |
 | Learned | 1200.4 ms | 24.63 us | 41.9% |
 | H2O-style | 1270.4 ms | 26.07 us | 38.5% |
 | LRU | 2067.3 ms | 42.43 us | 0.0% |
