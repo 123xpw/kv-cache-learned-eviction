@@ -17,6 +17,7 @@ This is a trace-driven simulator, not an end-to-end LLM serving system.
 - `kv_cache_sim.py`: trace generator, MLP training, cache-policy simulation, ablation, and plotting.
 - `figures/kv_cache_sim_results.png`: main 40% cache-budget comparison.
 - `figures/kv_cache_budget_results.png`: multi-budget comparison.
+- `figures/kv_cache_cost_results.png`: simplified system-cost estimate.
 ## Reproduce
 
 Install dependencies:
@@ -35,6 +36,7 @@ The script prints the main metrics and regenerates:
 
 - `kv_cache_sim_results.png`
 - `kv_cache_budget_results.png`
+- `kv_cache_cost_results.png`
 
 Expected main result under the default configuration:
 
@@ -44,6 +46,24 @@ Expected main result under the default configuration:
 | Learned | 90.8% |
 | H2O-style | 90.2% |
 | LRU | 84.2% |
+
+The script also includes a simplified system-cost model. This is an estimate, not a hardware measurement. The default model assumes:
+
+- 2 MB per KV block.
+- 16 GB/s effective transfer bandwidth.
+- 10 us fixed latency per block transfer.
+- 0.05 us hit cost.
+- 0.10 us compulsory miss cost.
+- 0.02 us MLP prediction cost per candidate block for `Learned`.
+
+Under this model, the default run estimates:
+
+| Policy | Estimated total cost | Average access cost | Cost reduction vs. LRU |
+| --- | ---: | ---: | ---: |
+| OPT | 939.4 ms | 19.28 us | 54.6% |
+| Learned | 1200.4 ms | 24.63 us | 41.9% |
+| H2O-style | 1270.4 ms | 26.07 us | 38.5% |
+| LRU | 2067.3 ms | 42.43 us | 0.0% |
 
 ## Method Summary
 

@@ -1,5 +1,6 @@
 import bisect
 import warnings
+from dataclasses import dataclass
 from collections import defaultdict
 
 import matplotlib
@@ -185,8 +186,35 @@ def train_mlp(train_trace, n_blocks: int, feature_mask=None, verbose=True):
 H2O_RECENT_WINDOW = 8   # H2O Recent Window 大小（保护最近 W 个访问块）
 
 
+@dataclass(frozen=True)
+class CostModel:
+    """
+    简化系统代价模型（估计值，不代表真实硬件测量）。
+
+    miss 后若块曾经出现过，则视为从 CPU 侧换入 GPU；cache 满时驱逐一个块，
+    视为换出至 CPU。Learned 额外计入每个候选块的 MLP 预测开销。
+    """
+    block_size_mb: float = 2.0
+    transfer_bandwidth_gbps: float = 16.0
+    transfer_fixed_latency_us: float = 10.0
+    hit_cost_us: float = 0.05
+    compulsory_miss_cost_us: float = 0.10
+    mlp_predict_us_per_block: float = 0.02
+
+    @property
+    def block_transfer_us(self) -> float:
+        return self.transfer_fixed_latency_us + (
+            self.block_size_mb * 1000.0 / self.transfer_bandwidth_gbps
+        )
+
+
+DEFAULT_COST_MODEL = CostModel()
+
+
 def simulate(trace, capacity: int, policy: str, n_blocks: int = 100,
-             mlp=None, scaler=None, reuse_dists=None, feature_mask=None):
+             mlp=None, scaler=None, reuse_dists=None, feature_mask=None,
+             cost_model: CostModel = DEFAULT_COST_MODEL,
+             return_stats: bool = False):
     """
     单策略 Trace-driven 仿真。
 
@@ -195,7 +223,8 @@ def simulate(trace, capacity: int, policy: str, n_blocks: int = 100,
       - 保护 Recent Window：最近 H2O_RECENT_WINDOW 次访问块不驱逐
       - 从剩余候选中驱逐累积注意力分数最低的块
 
-    返回 (overall_hit_rate, window_rates)
+    默认返回 (overall_hit_rate, window_rates)。
+    若 return_stats=True，返回包含命中率和简化系统代价估计的 dict。
     """
     if policy == 'opt':
         blk_acc_indices = defaultdict(list)
@@ -216,11 +245,18 @@ def simulate(trace, capacity: int, policy: str, n_blocks: int = 100,
     recent_accessed = []   # 全局访问历史（H2O Recent Window 使用）
 
     hits = misses = 0
+    compulsory_misses = 0
+    swap_ins = 0
+    swap_outs = 0
+    mlp_predictions = 0
+    estimated_cost_us = 0.0
+    seen_blocks = set()
     win_hits = win_total = 0
     window_rates = []
     WINDOW = 200
 
     def evict(current_idx, n_active):
+        nonlocal mlp_predictions
         candidates = [b for b in cache if b > 1]
         if not candidates:
             candidates = list(cache.keys())
@@ -241,6 +277,7 @@ def simulate(trace, capacity: int, policy: str, n_blocks: int = 100,
 
         elif policy == 'learned':
             if mlp is not None:
+                mlp_predictions += len(candidates)
                 feats = np.array([
                     extract_feature(b, n_blocks, cum_attn[b], acc_count[b],
                                     last_acc[b], current_idx, n_active,
@@ -253,6 +290,7 @@ def simulate(trace, capacity: int, policy: str, n_blocks: int = 100,
                 victim = min(candidates, key=lambda b: last_acc[b])
 
         del cache[victim]
+        return victim
 
     for i, acc in enumerate(trace):
         blk = acc['block_id']
@@ -263,12 +301,22 @@ def simulate(trace, capacity: int, policy: str, n_blocks: int = 100,
         if blk in cache:
             hits     += 1
             win_hits += 1
+            estimated_cost_us += cost_model.hit_cost_us
         else:
             misses += 1
+            if blk in seen_blocks:
+                swap_ins += 1
+                estimated_cost_us += cost_model.block_transfer_us
+            else:
+                compulsory_misses += 1
+                estimated_cost_us += cost_model.compulsory_miss_cost_us
             if len(cache) >= capacity:
                 evict(i, acc['n_active'])
+                swap_outs += 1
+                estimated_cost_us += cost_model.block_transfer_us
             cache[blk] = i
 
+        seen_blocks.add(blk)
         last_acc[blk] = i
         win_total += 1
 
@@ -277,7 +325,41 @@ def simulate(trace, capacity: int, policy: str, n_blocks: int = 100,
             win_hits = win_total = 0
 
     total = hits + misses
-    return (hits / total if total > 0 else 0.0), window_rates
+    hit_rate = hits / total if total > 0 else 0.0
+    estimated_cost_us += mlp_predictions * cost_model.mlp_predict_us_per_block
+
+    if not return_stats:
+        return hit_rate, window_rates
+
+    return {
+        'hit_rate': hit_rate,
+        'window_rates': window_rates,
+        'hits': hits,
+        'misses': misses,
+        'compulsory_misses': compulsory_misses,
+        'swap_ins': swap_ins,
+        'swap_outs': swap_outs,
+        'mlp_predictions': mlp_predictions,
+        'estimated_cost_us': estimated_cost_us,
+        'avg_access_cost_us': estimated_cost_us / total if total > 0 else 0.0,
+    }
+
+
+def summarize_costs(results, baseline='lru'):
+    """根据 simulate(return_stats=True) 的结果计算相对基线的估计代价下降。"""
+    base = results[baseline]['estimated_cost_us']
+    summary = {}
+    for policy, stats in results.items():
+        reduction = (base - stats['estimated_cost_us']) / base * 100.0 if base else 0.0
+        summary[policy] = {
+            'estimated_cost_ms': stats['estimated_cost_us'] / 1000.0,
+            'avg_access_cost_us': stats['avg_access_cost_us'],
+            'swap_ins': stats['swap_ins'],
+            'swap_outs': stats['swap_outs'],
+            'mlp_predictions': stats['mlp_predictions'],
+            'cost_reduction_vs_lru_pct': reduction,
+        }
+    return summary
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -453,6 +535,36 @@ def plot_budget_results(budget_results, budget_pcts,
     print(f"  保存：{save_path}")
 
 
+def plot_cost_results(cost_summary, save_path='kv_cache_cost_results.png'):
+    """绘制简化系统代价估计图。"""
+    order = ['opt', 'learned', 'h2o', 'lru']
+    labels = ['OPT\n(理论上界)', 'Learned\n(本文)',
+              '$H_2O$-style\n(块级基线)', 'LRU\n(基准)']
+    colors = ['#37474F', '#1B5E20', '#E65100', '#B71C1C']
+
+    total_ms = [cost_summary[p]['estimated_cost_ms'] for p in order]
+    avg_us = [cost_summary[p]['avg_access_cost_us'] for p in order]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.2))
+    ax1.bar(labels, total_ms, color=colors, width=0.58,
+            edgecolor='white', linewidth=1.0, zorder=3)
+    ax1.set_ylabel('估计累计代价 (ms)', fontsize=10)
+    ax1.set_title('(a) 简化系统代价估计', fontsize=10)
+    ax1.grid(axis='y', alpha=0.25, zorder=0)
+    ax1.tick_params(axis='both', labelsize=9)
+
+    ax2.bar(labels, avg_us, color=colors, width=0.58,
+            edgecolor='white', linewidth=1.0, zorder=3)
+    ax2.set_ylabel('平均每次访问代价 (us)', fontsize=10)
+    ax2.set_title('(b) 平均访问代价估计', fontsize=10)
+    ax2.grid(axis='y', alpha=0.25, zorder=0)
+    ax2.tick_params(axis='both', labelsize=9)
+
+    plt.tight_layout(w_pad=2.4)
+    plt.savefig(save_path, dpi=200, bbox_inches='tight', facecolor='white')
+    print(f"  保存：{save_path}")
+
+
 # ═══════════════════════════════════════════════════════════════
 # 9. 主程序
 # ═══════════════════════════════════════════════════════════════
@@ -471,7 +583,7 @@ def main():
     print("=" * 62)
 
     # ── [1] 生成共享重要性分布与访问迹 ──────────────────────────
-    print("\n[1/5] 生成共享块重要性分布与访问迹 ...")
+    print("\n[1/6] 生成共享块重要性分布与访问迹 ...")
     importance  = make_importance(N_BLOCKS, seed=IMP_SEED)
     train_trace = generate_trace(TRAIN_STEPS, N_BLOCKS,
                                   seed=TRAIN_SEED, importance=importance)
@@ -484,11 +596,11 @@ def main():
     print(f"  Block 0 重要性占比: {importance[0]*100:.2f}%  (Attention Sink)")
 
     # ── [2] 训练 MLP ─────────────────────────────────────────────
-    print("\n[2/5] 训练 MLP 预测器（全部 6 维特征）...")
+    print("\n[2/6] 训练 MLP 预测器（全部 6 维特征）...")
     mlp, scaler = train_mlp(train_trace, N_BLOCKS)
 
     # ── [3] 主实验：40% 缓存预算 ─────────────────────────────────
-    print("\n[3/5] 主实验：四种策略对比（缓存预算 40%）...")
+    print("\n[3/6] 主实验：四种策略对比（缓存预算 40%）...")
     configs = [
         ('opt',     dict(reuse_dists=test_rd)),
         ('learned', dict(mlp=mlp, scaler=scaler)),
@@ -496,9 +608,13 @@ def main():
         ('lru',     dict()),
     ]
     results = {}
+    cost_stats = {}
     for policy, kw in configs:
-        hr, wr = simulate(test_trace, CAPACITY, policy, N_BLOCKS, **kw)
+        stats = simulate(test_trace, CAPACITY, policy, N_BLOCKS,
+                         return_stats=True, **kw)
+        hr, wr = stats['hit_rate'], stats['window_rates']
         results[policy] = {'hit_rate': hr, 'window_rates': wr}
+        cost_stats[policy] = stats
         print(f"  {policy:8s}  命中率 = {hr * 100:.1f}%")
 
     lru = results['lru']['hit_rate']     * 100
@@ -512,8 +628,28 @@ def main():
     print("\n  生成主实验图表 ...")
     plot_main_results(results)
 
+    # ── [4] 简化系统代价模型 ───────────────────────────────────
+    print("\n[4/6] 简化系统代价模型（估计值，非真实硬件测量）...")
+    cm = DEFAULT_COST_MODEL
+    print("  参数："
+          f"block={cm.block_size_mb:.1f} MB, "
+          f"bandwidth={cm.transfer_bandwidth_gbps:.1f} GB/s, "
+          f"fixed_latency={cm.transfer_fixed_latency_us:.1f} us, "
+          f"mlp={cm.mlp_predict_us_per_block:.2f} us/block")
+    cost_summary = summarize_costs(cost_stats)
+    plot_cost_results(cost_summary)
+
+    print(f"\n  {'策略':<8}  {'swap-in':>8}  {'swap-out':>8}  "
+          f"{'估计代价(ms)':>12}  {'平均访问(us)':>12}  {'较LRU下降':>10}")
+    for p in ['opt', 'learned', 'h2o', 'lru']:
+        row = cost_summary[p]
+        print(f"  {p:<8}  {row['swap_ins']:8d}  {row['swap_outs']:8d}  "
+              f"{row['estimated_cost_ms']:12.1f}  "
+              f"{row['avg_access_cost_us']:12.2f}  "
+              f"{row['cost_reduction_vs_lru_pct']:9.1f}%")
+
     # ── [4] 多缓存预算实验 ───────────────────────────────────────
-    print("\n[4/5] 多缓存预算实验（20%–80%）...")
+    print("\n[5/6] 多缓存预算实验（20%–80%）...")
     budget_results, budget_pcts = run_budget_experiment(
         test_trace, N_BLOCKS, mlp, scaler, test_rd)
     plot_budget_results(budget_results, budget_pcts)
@@ -526,8 +662,8 @@ def main():
         print(f"  {b:3d}%  {o:6.1f}%  {h:6.1f}%  {l:8.1f}%  {r:6.1f}%  "
               f"{l - r:+10.1f}  {l - h:+9.1f}")
 
-    # ── [5] 特征消融实验 ─────────────────────────────────────────
-    print("\n[5/5] 特征消融实验 ...")
+    # ── [6] 特征消融实验 ─────────────────────────────────────────
+    print("\n[6/6] 特征消融实验 ...")
     ablation = run_ablation_experiment(
         train_trace, test_trace, N_BLOCKS, CAPACITY)
     base_hr = ablation['全部6特征（原版）']
